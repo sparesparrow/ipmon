@@ -1,7 +1,7 @@
 # CMakeLists.txt
 
 cmake_minimum_required(VERSION 3.12)
-project(ipmon VERSION 0.0.1 LANGUAGES CXX)
+project(ipmon VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,6 +26,7 @@ pkg_check_modules(NFTABLES REQUIRED libnftables)
 # Source files
 set(SOURCES
     src/ipmon.cpp
+    # TODO: consider splitting into separate source files
     # src/network/interface_monitor.cpp
     # src/network/address_manager.cpp
     # src/config/nft_manager.cpp

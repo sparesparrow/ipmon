@@ -123,7 +123,11 @@ ipmon::ipmon()
     strcpy(_socket_server_addr.sun_path, _socket_server_path);
     int len = sizeof(_socket_server_addr);
     
-    unlink(_socket_server_path);
+    // Unlink the socket path before binding
+    if (unlink(_socket_server_path) == -1 && errno != ENOENT) {
+        std::cerr << "Error unlinking socket at path " << _socket_server_path << ": " << strerror(errno) << ". Are you running as root?" << std::endl;
+    }
+
     int rc = bind(_socket_server_fd.get(), reinterpret_cast<struct sockaddr*> (&_socket_server_addr), len);
     if (rc == -1) {
         throw std::runtime_error("BIND ERROR: " + std::string(strerror(errno)));
@@ -153,7 +157,6 @@ void ipmon::listen_socket()
             if (auto bytes_read = recvfrom(_socket_server_fd.get(), buf, 256, MSG_WAITALL, peer_sock_p, &peer_len);
                 bytes_read != -1)
             {
-                //std::this_thread::sleep_for(std::chrono::milliseconds(2000));
                 if (auto buf_view = std::string_view(buf, bytes_read);
                     buf_view == sockserver_cmds.at(sockserver_cmd::reload) ) {
                     reload();
@@ -170,7 +173,6 @@ void ipmon::listen_socket()
         }
         catch (const std::exception& e) {
             log_and_aleep("Error in listen_socket: " + std::string(e.what()));
-            // Continue listening despite the error
             continue;
         }
     }
@@ -286,7 +288,7 @@ void ipmon::print()
 
 void ipmon::run()
 {
-    // Create netlink socket
+    // Create netlink socket for monitoring network interface changes
     _netlink_fd = FileDescriptor(socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE));
     while (!_netlink_fd.is_valid()) {
         log_and_aleep("Failed to create netlink socket: ");
@@ -294,15 +296,21 @@ void ipmon::run()
         _netlink_fd = FileDescriptor(socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE));
     }
 
+    // Set up netlink message buffer and IO vector
     char buf[16384];
     struct iovec iov;
     iov.iov_base = buf;
     iov.iov_len = sizeof(buf);
+
+    // Configure local netlink socket address
     struct sockaddr_nl local;
     memset(&local, 0, sizeof(local));
     local.nl_family = AF_NETLINK;
+    // Subscribe to IPv4 and IPv6 address notifications
     local.nl_groups = RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR;
     local.nl_pid = getpid();
+
+    // Set up message header structure
     struct msghdr msg =
     {
         msg.msg_name = &local,
@@ -314,10 +322,12 @@ void ipmon::run()
         msg.msg_flags = 0,
     };
 
+    // Bind the netlink socket
     while (bind(_netlink_fd.get(), reinterpret_cast<struct sockaddr*>(&local), sizeof(local)) < 0) {
         log_and_aleep("Failed to bind netlink socket.");
     }
 
+    // Timer state to coalesce rapid network changes
     struct TimerState {
         std::mutex mutex;
         bool ticking{false};
@@ -326,7 +336,9 @@ void ipmon::run()
     
     TimerState timer;
     
+    // Main event loop
     while (true) {
+        // Check if we need to process pending updates
         {
             std::lock_guard<std::mutex> lock(timer.mutex);
             if (timer.ticking) {
@@ -338,8 +350,10 @@ void ipmon::run()
             }
         }
         
+        // Try to receive netlink messages
         ssize_t status = recvmsg(_netlink_fd.get(), &msg, MSG_DONTWAIT);
         if (status < 0) {
+            // Handle non-blocking socket timeouts
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 std::this_thread::sleep_for(std::chrono::microseconds(250'000));
                 continue;
@@ -347,12 +361,15 @@ void ipmon::run()
             log_and_aleep("Error: netlink receive error: ");
             continue;
         } else if (status == 0) {
+            // Socket was closed
             log_and_aleep("Error: EOF on netlink.");
             continue;
         } else if (msg.msg_namelen != sizeof(local)) {
+            // Invalid sender address
             log_and_aleep("Error: Invalid netlink sender address length = " + std::to_string(msg.msg_namelen));
             continue;
         } else {
+            // Process received message and start update timer if needed
             if (_opt_monitor)
                     parse_netlink_msg(status, reinterpret_cast<struct nlmsghdr*>(buf));
             if (!timer.ticking) {
@@ -361,6 +378,7 @@ void ipmon::run()
                 timer.ticking = true;
             }
         }
+        // Brief sleep to prevent busy-waiting
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }
@@ -429,7 +447,8 @@ void ipmon::parse_netlink_msg(ssize_t status, struct nlmsghdr* buf)
     }
 }
 
-std::string network_addr_str(in_addr_t addr, in_addr_t mask) {
+std::string network_addr_str(in_addr_t addr, in_addr_t mask)
+{
     char netAddrBuffer[INET_ADDRSTRLEN];
     auto addr_and_mask = addr & mask;
     inet_ntop(
@@ -445,7 +464,8 @@ std::string network_addr_str(in_addr_t addr, in_addr_t mask) {
     return std::string(netAddrBuffer) + "/" + std::to_string(count);
 }
 
-void ipmon::get_if_addresses() {
+void ipmon::get_if_addresses()
+{
     ifaddrs* raw_ptr = nullptr;
     if (getifaddrs(&raw_ptr) != 0) {
         throw std::runtime_error("getifaddrs failed: " + std::string(strerror(errno)));
@@ -463,7 +483,7 @@ void ipmon::get_if_addresses() {
             continue;
         }
         if (ifa->ifa_addr->sa_family == AF_INET) {
-            auto binary_addr_ptr= &reinterpret_cast<struct sockaddr_in *>(ifa->ifa_addr)->sin_addr;
+            auto binary_addr_ptr = &reinterpret_cast<struct sockaddr_in *>(ifa->ifa_addr)->sin_addr;
             auto binary_mask_ptr = &reinterpret_cast<struct sockaddr_in *>(ifa->ifa_netmask)->sin_addr;
             auto net_addr_s = network_addr_str(binary_addr_ptr->s_addr, binary_mask_ptr->s_addr);
             char addressBuffer[INET_ADDRSTRLEN];
@@ -471,24 +491,33 @@ void ipmon::get_if_addresses() {
             if (auto find_it = temp_ifaces.find(ifa->ifa_name); find_it != temp_ifaces.end()) {
                 find_it->second->ipv4.emplace_back(std::string(addressBuffer));
                 auto& nets = find_it->second->ipv4_net;
-                if (std::find(nets.begin(), nets.end(), net_addr_s ) == nets.end())
+                if (std::find(nets.begin(), nets.end(), net_addr_s) == nets.end())
                     nets.emplace_back(net_addr_s);
             } else {
-                struct addrs new_addrs = { {std::string(addressBuffer)}, {}, {net_addr_s} };
+                struct addrs new_addrs = { {std::string(addressBuffer)}, {}, {net_addr_s}, {} };
                 temp_ifaces.emplace(std::make_pair(std::string(ifa->ifa_name),
                     std::make_shared<struct addrs>(new_addrs)));
             }
         } else if (ifa->ifa_addr->sa_family == AF_INET6) {
-            auto binary_addr_ptr=&reinterpret_cast<struct sockaddr_in6 *>(ifa->ifa_addr)->sin6_addr;
+            auto binary_addr_ptr = &reinterpret_cast<struct sockaddr_in6 *>(ifa->ifa_addr)->sin6_addr;
             char addressBuffer[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, binary_addr_ptr, addressBuffer, INET6_ADDRSTRLEN);
             if (auto find_it = temp_ifaces.find(ifa->ifa_name); find_it != temp_ifaces.end()) {
                 find_it->second->ipv6.emplace_back(std::string(addressBuffer));
             } else {
-                struct addrs new_addrs = { {}, {std::string(addressBuffer)}, {} };
+                struct addrs new_addrs = { {}, {std::string(addressBuffer)}, {}, {} };
                 temp_ifaces.emplace(std::make_pair(std::string(ifa->ifa_name),
                     std::make_shared<struct addrs>(new_addrs)));
             }
+        }
+    }
+
+    // Add null addresses for interfaces without IPs
+    for (auto& tmp : tmp_ifaces) {
+        if (temp_ifaces.find(tmp) == temp_ifaces.end()) {
+            struct addrs empty_addrs = { {"0.0.0.0"}, {"::"}, {"0.0.0.0"}, {"::"} };
+            temp_ifaces.emplace(std::make_pair(std::string(tmp), 
+                std::make_shared<struct addrs>(empty_addrs)));
         }
     }
 
@@ -496,12 +525,6 @@ void ipmon::get_if_addresses() {
         std::lock_guard<std::mutex> lock(ifaces_mutex_);
         _ifaces = std::move(temp_ifaces);
     }
-
-    for (auto& tmp : tmp_ifaces)    // sets null addresses only if both IPv4 and IPv6 are empty
-        if (_ifaces.find(tmp) == _ifaces.end()) {
-            struct addrs empty_addrs = { {"0.0.0.0"}, {"::"}, {"0.0.0.0"} };
-            _ifaces.emplace(std::make_pair(std::string(tmp), std::make_shared<struct addrs>(empty_addrs)));
-        }
 }
 
 /* Has to be an object value {} */
@@ -626,13 +649,11 @@ void ipmon::tell_proxy()
         then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv6_address", if_ipv6_address));
         then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv4_network", if_ipv4_network));
 
-        /* TODO: Add IPv6 network support
-                Json::Value if_ipv6_network = Json::arrayValue;
-                for (auto &a : p->second->ipv6_net) {
-                    if_ipv6_network.append(a);
-                }
-                then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv6_network", if_ipv6_network));
-        */
+        Json::Value if_ipv6_network = Json::arrayValue;
+        for (auto &a : p->second->ipv6_net) {
+            if_ipv6_network.append(a);
+        }
+        then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv6_network", if_ipv6_network));
     }
     Json::Value hostname = Json::arrayValue;
     hostname.append(get_hostname());

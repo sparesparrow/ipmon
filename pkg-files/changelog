@@ -1,3 +1,15 @@
+ipmon (1.0.0) stable; urgency=medium
+  * Added error handling for socket initialization
+  * Improved netlink message parsing
+  * Enhanced IPv6 network support
+  * Fixed memory leaks in address handling
+  * Added hostname resolution
+  * Improved configuration file handling
+  * Better systemd integration
+  * Added support for interface network masks
+  * Enhanced proxy reload mechanism
+  * Added robust error logging
+
 ipmon (0.0.1) unstable; urgency=medium
   * Initial release
   * Network interface monitoring with IPv4/IPv6 support

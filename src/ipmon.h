@@ -16,25 +16,31 @@
 #include "FileDescriptor.h"
 #include "SocketGuard.h"
 
-struct addrs {
+// TODO: Split header files
+
+/*! Holds data for network interfaces and addresses */
+struct addrs
+{
     std::vector<std::string> ipv4;
     std::vector<std::string> ipv6;
     std::vector<std::string> ipv4_net;
+    std::vector<std::string> ipv6_net;
 };
 
 /*! The ipmon, of which only one instance should exist.
  *  Maybe will be transformed to singleton.
  */
-
 class ipmon
 {
 public:
-    enum class sockserver_cmd {
+    enum class sockserver_cmd
+    {
         update,
         reload,
         _size
     };
-    const std::map<sockserver_cmd, const char*> sockserver_cmds {
+    const std::map<sockserver_cmd, const char*> sockserver_cmds
+    {
         { sockserver_cmd::update, "update" },
         { sockserver_cmd::reload, "reload" },
     };
@@ -49,8 +55,10 @@ public:
      * \param[in] argv from main()*/
     void process_cmdline(int argc, char* argv[]);
     /*! Calls \c update() immediately if \c _opt_start is set. Should be called before \c run() */
-    void start() {
-        if (_opt_start) {
+    void start()
+    {
+        if (_opt_start)
+        {
             update();
             _opt_start = false;
         }
@@ -95,23 +103,28 @@ private:
     bool _opt_start = false;
     //! Time for which related messages should be ignored
     std::chrono::microseconds _delay {200'000};
+    //! Unix socket server path
+    static constexpr const char* _socket_server_path = "/run/ipmon.sock";
     //! Proxy persistent configuration file
     std::string _proxy_outfile{"/etc/ipmon/ifacesAddrs.json"};
+    //! Command to reload proxy service
+    static constexpr const char* _cmd_reload_proxy = "systemctl reload proxy --quiet";
     //! Nftables persistent configuration file
     std::string _nft_outfile{"/etc/impon/ifacesAddrs"};
+    //! Nftables persistent configuration file sets
     std::string nft_outfile_sets() const { return _nft_outfile + ".sets"; }
+    //! Nftables persistent configuration file variables
     std::string nft_outfile_vars() const { return _nft_outfile + ".vars"; }
-    //! Nftables flush-and-reload script
-    static constexpr const char* _nft_conf_no_suricata = "/etc/impon/nftablesNoSuricata.conf";
-    static constexpr const char* _nft_conf_with_suricata = "/etc/impon/nftablesWithSuricata.conf";
-    static constexpr const char* _socket_server_path = "/run/ipmon.sock";
-
-    static constexpr const char* _cmd_status_suricata = "systemctl is-active suricata.service --quiet";
-    static constexpr const char* _cmd_reload_proxy = "systemctl reload proxy --quiet";
+    //! Nftables configuration file for ipmon-handled rules
+    static constexpr const char* _nft_conf_ipmon = "/etc/impon/nftables.conf";
+    //! Nftables configuration file for default rules
+    static constexpr const char* _nft_conf_default = "/etc/nftables.conf";
+    //! Command to check if ipmon-handled rules are included in nftables
+    static constexpr const char* _cmd_nftables_status = "nft list ruleset | grep -q 'include \"/etc/ipmon/nftables.conf\"'";
     /*! \return path to which nftables configuration should be used for reloading the configuration. */
     auto nft_conf_file() {
-        int ret = system(_cmd_status_suricata);
-        return (WEXITSTATUS(ret) == 0 ? _nft_conf_with_suricata : _nft_conf_no_suricata);
+        int ret = system(_cmd_nftables_status);
+        return (WEXITSTATUS(ret) == 0 ? _nft_conf_ipmon : _nft_conf_default);
     }
     /*! Called from \c start() and after receiving IPv4/IPv6 address-related message from netlink.
      *  Obtains current interface information and updates served components. */
@@ -164,20 +177,23 @@ public:
     //! Destructs the object
     virtual ~cmd_json() {}
     /*! \return stored value as a string */
-    const std::string get_str() {
+    const std::string get_str()
+    {
         Json::Value root;
         root[_keyroot] = *_proot;
         Json::FastWriter writer;
         return writer.write(root);
     }
     /*! \return stored value as a pretty-print string */
-    const std::string get_pp() {
+    const std::string get_pp()
+    {
         Json::Value root;
         root[_keyroot] = *_proot;
         return root.toStyledString();
     }
     /*! \return stored value as JSON object/array */
-    const Json::Value get_json() {
+    const Json::Value get_json()
+    {
         Json::Value root;
         root[_keyroot] = *_proot;
         return root;
@@ -194,13 +210,15 @@ class cmd_json_a : public cmd_json
 {
 public:
     //! Constructs the object
-    cmd_json_a(std::string keyroot): cmd_json(keyroot) {
+    cmd_json_a(std::string keyroot): cmd_json(keyroot)
+    {
         _proot = std::make_shared<Json::Value>(Json::Value(Json::arrayValue));
     }
     //! Destructs the object
     virtual ~cmd_json_a() {}
     //! Adds command to the commands list
-    void cmd_append(Json::Value cmd) {
+    void cmd_append(Json::Value cmd)
+    {
         _proot->append(cmd);
     }
 protected:
@@ -214,6 +232,7 @@ public:
     proxy_seq(): cmd_json_a("!seq") { }
 };
 
+/*! Base class for nftables commands */
 class nft_root : public cmd_json_a
 {
 public:
@@ -222,12 +241,14 @@ public:
     //! Destructs the object
     virtual ~nft_root() {}
     //! Adds testing command to dry run before running actual command
-    void test_cmd_append(std::string cmd) {
+    void test_cmd_append(std::string cmd)
+    {
         test_cmds.emplace_back(cmd);
     }
     //! Stored testing commands
     std::vector<std::string> test_cmds{};
 };
+
 /*! Holds data for creating various \c nft commands */
 class nft_set : public nft_root
 {
@@ -240,7 +261,8 @@ public:
             std::vector<std::string>& addresses): nft_root(),
         _family(family), _table(table), _name(name), _type(type), _addresses(addresses)  { }
     //! \return JSON command creating an empty set
-    Json::Value cmd_add_set_json(bool append = false) {
+    Json::Value cmd_add_set_json(bool append = false)
+    {
         Json::Value set;
         set["family"] = _family;
         set["table"] = _table;
@@ -255,7 +277,8 @@ public:
         return add;
     }
     //! \return JSON command flushing a set. Prints some errors if set does not exist
-    Json::Value cmd_flush_set_json(bool append = false) {
+    Json::Value cmd_flush_set_json(bool append = false)
+    {
         Json::Value set;
         set["family"] = _family;
         set["table"] = _table;
@@ -269,7 +292,8 @@ public:
         return flush;
     }
     //! \return JSON command filling the set with elements or creating such set if not exists
-    Json::Value cmd_add_element_json(bool append = false) {
+    Json::Value cmd_add_element_json(bool append = false)
+    {
         Json::Value element;
         element["family"] = _family;
         element["table"] = _table;
@@ -289,19 +313,22 @@ public:
         return add;
     }
     //! \return BISON command creating an empty set
-    const std::string cmd_add_empty() {
+    const std::string cmd_add_empty()
+    {
         std::stringstream ss;
         ss << "add set " << _family << " " << _table << " " << _name << " { type " << _type << " ; }";
         return ss.str();
     }
     //! \return BISON command flushing a set. Prints some errors if set does not exist
-    const std::string cmd_flush() {
+    const std::string cmd_flush()
+    {
         std::stringstream ss;
         ss << "flush set " << _family << " " << _table << " " << _name;
         return ss.str();
     }
     //! \return BISON command filling the set with elements or creating such set if not exists
-    const std::string cmd_add() {
+    const std::string cmd_add()
+    {
         std::stringstream ss;
         ss << "add set " << _family << " " << _table << " " << _name << " { type " << _type << " ; elements = { ";
         for (auto &a : _addresses)

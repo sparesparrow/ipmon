@@ -1,6 +1,6 @@
 Package: ipmon
 Source: ipmon
-Version: {{VERSION}}
+Version: 1.0.0
 Section: admin
 Priority: optional
 Architecture: amd64
