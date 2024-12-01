@@ -1,4 +1,3 @@
-# postinst
 #!/bin/sh
 set -e
 echo "Running postinst"
