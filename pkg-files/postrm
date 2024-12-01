@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+echo "Running postrm"
+
+systemctl daemon-reload
+
+# Clean up on package removal
+if [ "$1" = "remove" ]; then
+    # Remove runtime files
+    rm -f /run/ipmon.sock
+    # Remove configuration files if they exist
+    rm -f /etc/ipmon/ifacesAddrs.sets
+    rm -f /etc/ipmon/ifacesAddrs.vars
+    rm -f /etc/ipmon/ifacesAddrs.json
+fi

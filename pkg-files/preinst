@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+echo "Running preinst"
+
+# Stop ipmon service if it's running during upgrade
+if [ "$1" = "upgrade" ] && systemctl is-active --quiet ipmon; then
+    systemctl stop ipmon || true
+fi

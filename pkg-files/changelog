@@ -1,0 +1,10 @@
+ipmon (0.0.1) unstable; urgency=medium
+  * Initial release
+  * Network interface monitoring with IPv4/IPv6 support
+  * Real-time NFTables rule updates
+  * Proxy configuration management
+  * Unix socket IPC support
+  * Systemd service integration
+  * Configurable update delay with debouncing
+  * Thread-safe operation
+  * Comprehensive logging

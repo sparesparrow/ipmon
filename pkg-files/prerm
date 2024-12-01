@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+echo "Running prerm"
+
+# Stop service before removal
+if systemctl is-active --quiet ipmon; then
+    systemctl stop ipmon || true
+fi

@@ -1,0 +1,13 @@
+[Unit]
+Description=IP Address Monitor
+After=network.target
+Wants=nftables.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ipmon -n -p -s
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

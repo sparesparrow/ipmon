@@ -1,0 +1,25 @@
+Package: ipmon
+Source: ipmon
+Version: {{VERSION}}
+Section: admin
+Priority: optional
+Architecture: amd64
+Depends: libc6 (>= 2.14),
+         libgcc-s1 (>= 3.0),
+         libjsoncpp1 (>= 1.7.4),
+         libnftables1 (>= 0.9.3),
+         libstdc++6 (>= 9)
+Maintainer: sparesparrow <sparesparrow@protonmail.ch>
+Description: IP Address monitor
+ Monitors network interfaces for IP address changes and automatically updates
+ configuration for:
+  * NFTables firewall rules
+  * Proxy configurations
+  * Network-dependent services
+ .
+ Features:
+  * Real-time monitoring of IPv4 and IPv6 addresses
+  * Atomic configuration updates
+  * Support for named sets in NFTables
+  * Configurable update delay
+  * System service integration

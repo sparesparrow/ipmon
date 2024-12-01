@@ -1,0 +1,18 @@
+# postinst
+#!/bin/sh
+set -e
+echo "Running postinst"
+
+# Create required directories
+mkdir -p /etc/impon
+mkdir -p /run/ipmon
+
+# Set permissions
+chown root:root /usr/bin/ipmon
+chmod 755 /usr/bin/ipmon
+
+# Enable and start services
+systemctl daemon-reload
+systemctl enable nftables
+systemctl enable ipmon
+systemctl start ipmon
