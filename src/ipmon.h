@@ -15,6 +15,7 @@
 #include <string>
 #include "FileDescriptor.h"
 #include "SocketGuard.h"
+#include <optional>
 
 // TODO: Split header files
 
@@ -173,16 +174,29 @@ class cmd_json
 {
 public:
     //! Constructs the object
-    cmd_json(std::string keyroot): _keyroot(keyroot) { }
+    explicit cmd_json(std::string keyroot): 
+        _proot(std::make_shared<Json::Value>(Json::arrayValue)),
+        _keyroot(std::move(keyroot))
+    { }
     //! Destructs the object
     virtual ~cmd_json() = default;
     /*! \return stored value as a string */
-    const std::string get_str()
+    std::string get_str() const
     {
-        Json::Value root;
-        root[_keyroot] = *_proot;
-        Json::FastWriter writer;
-        return writer.write(root);
+        try {
+            Json::Value root;
+            root[_keyroot] = *_proot;
+            Json::FastWriter writer;
+            std::string result = writer.write(root);
+            // Remove trailing newline if present
+            if (!result.empty() && result.back() == '\n') {
+                result.pop_back();
+            }
+            return result;
+        } catch (const std::exception& e) {
+            std::cerr << "Error in get_str: " << e.what() << std::endl;
+            throw;
+        }
     }
     /*! \return stored value as a pretty-print string */
     const std::string get_pp()
@@ -198,6 +212,18 @@ public:
         root[_keyroot] = *_proot;
         return root;
     }
+    // Add a public method to append values
+    void append(const Json::Value& value) {
+        try {
+            if (!_proot) {
+                _proot = std::make_shared<Json::Value>(Json::arrayValue);
+            }
+            _proot->append(value);
+        } catch (const std::exception& e) {
+            std::cerr << "Error in append: " << e.what() << std::endl;
+            throw;
+        }
+    }
 protected:
     //! Stored commands
     std::shared_ptr<Json::Value> _proot;
@@ -210,16 +236,15 @@ class cmd_json_a : public cmd_json
 {
 public:
     //! Constructs the object
-    cmd_json_a(std::string keyroot): cmd_json(keyroot)
+    explicit cmd_json_a(std::string keyroot): cmd_json(std::move(keyroot))
     {
-        _proot = std::make_shared<Json::Value>(Json::Value(Json::arrayValue));
     }
     //! Destructs the object
     virtual ~cmd_json_a() override = default;
     //! Adds command to the commands list
     void cmd_append(Json::Value cmd)
     {
-        _proot->append(cmd);
+        append(cmd);
     }
 protected:
 private:
@@ -243,7 +268,7 @@ public:
     //! Adds testing command to dry run before running actual command
     void test_cmd_append(std::string cmd)
     {
-        test_cmds.emplace_back(cmd);
+        test_cmds.emplace_back(std::move(cmd));
     }
     //! Stored testing commands
     std::vector<std::string> test_cmds{};
@@ -258,8 +283,13 @@ public:
             std::string table,
             std::string name,
             std::string type,
-            std::vector<std::string>& addresses): nft_root(),
-        _family(family), _table(table), _name(name), _type(type), _addresses(addresses)  { }
+            const std::vector<std::string>& addresses): nft_root(),
+        _family(family), 
+        _table(table), 
+        _name(name), 
+        _type(type), 
+        _addresses(addresses)  // Store a copy instead of a reference
+    { }
     //! \return JSON command creating an empty set
     Json::Value cmd_add_set_json(bool append = false)
     {
@@ -346,5 +376,7 @@ private:
     //! Set type (currently only \c ipv4_addr )
     std::string _type;
     //! Set elements, must not be empty
-    std::vector<std::string>& _addresses;
+    std::vector<std::string> _addresses;   // Store by value instead
 };
+
+std::optional<std::string> atomic_write(const std::string& path, const std::string& content);

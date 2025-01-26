@@ -36,26 +36,37 @@ set(SOURCES
     # src/utils/socket_utils.cpp
 )
 
-# Add executable
-add_executable(ipmon ${SOURCES})
+# Create a library from the source files
+add_library(ipmon_lib STATIC ${SOURCES})
 
-# Link libraries
-target_link_libraries(ipmon PRIVATE
-    ${JSONCPP_LIBRARIES}
-    ${NFTABLES_LIBRARIES}
-    pthread
-)
-
-# Include directories
-target_include_directories(ipmon PRIVATE
+# Set include directories for the library
+target_include_directories(ipmon_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
     ${JSONCPP_INCLUDE_DIRS}
     ${NFTABLES_INCLUDE_DIRS}
 )
 
+# Link libraries to ipmon_lib
+target_link_libraries(ipmon_lib PUBLIC
+    ${JSONCPP_LIBRARIES}
+    ${NFTABLES_LIBRARIES}
+    pthread
+)
+
+# Add executable
+add_executable(ipmon src/main.cpp)
+
+# Link the executable with our library
+target_link_libraries(ipmon PRIVATE ipmon_lib)
+
 # Installation rules
 install(TARGETS ipmon
     RUNTIME DESTINATION bin
+)
+
+install(TARGETS ipmon_lib
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
 )
 
 # Install service file
@@ -75,9 +86,9 @@ install(DIRECTORY DESTINATION /run/ipmon
                          WORLD_READ WORLD_EXECUTE
 )
 
-# TODO: Add testing
-# enable_testing()
-# add_subdirectory(tests)
+# Add testing
+enable_testing()
+add_subdirectory(tests)
 
 # Package version and maintainer info
 set(CPACK_PACKAGE_VERSION "0.0.1")
