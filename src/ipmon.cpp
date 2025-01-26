@@ -153,26 +153,35 @@ void ipmon::listen_socket()
             memset(&peer_sock, 0, sizeof(struct sockaddr_un));
             socklen_t peer_len = sizeof(peer_sock);
             char buf[256];
-            const auto& peer_sock_p = reinterpret_cast<struct sockaddr*> (&peer_sock);
-            if (auto bytes_read = recvfrom(_socket_server_fd.get(), buf, 256, MSG_WAITALL, peer_sock_p, &peer_len);
-                bytes_read != -1)
-            {
-                if (auto buf_view = std::string_view(buf, bytes_read);
-                    buf_view == sockserver_cmds.at(sockserver_cmd::reload) ) {
-                    reload();
-                    if (sendto(_socket_server_fd.get(), nullptr, 0, 0, peer_sock_p, sizeof(peer_sock)) == -1) {
-                        log_and_aleep("Listening socket reply error(sendto): ");
-                    }
-                } else if (buf_view == sockserver_cmds.at(sockserver_cmd::update) ) {
-                    update();
+            
+            const auto& peer_sock_p = reinterpret_cast<struct sockaddr*>(&peer_sock);
+            auto bytes_read = recvfrom(_socket_server_fd.get(), buf, sizeof(buf)-1, MSG_WAITALL, 
+                                     peer_sock_p, &peer_len);
+                                     
+            if (bytes_read == -1) {
+                if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    throw std::runtime_error("Socket read error: " + std::string(strerror(errno)));
                 }
-                std::this_thread::sleep_for(std::chrono::microseconds(250'000));
-            } else if (errno !=  EAGAIN && errno != EWOULDBLOCK) {
-                log_and_aleep("Listening socket error(recvfrom): ");
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
             }
-        }
-        catch (const std::exception& e) {
-            log_and_aleep("Error in listen_socket: " + std::string(e.what()));
+            
+            // Ensure null termination
+            buf[bytes_read] = '\0';
+            
+            auto buf_view = std::string_view(buf, bytes_read);
+            if (buf_view == sockserver_cmds.at(sockserver_cmd::reload)) {
+                reload();
+                if (sendto(_socket_server_fd.get(), nullptr, 0, 0, peer_sock_p, sizeof(peer_sock)) == -1) {
+                    throw std::runtime_error("Socket write error: " + std::string(strerror(errno)));
+                }
+            } else if (buf_view == sockserver_cmds.at(sockserver_cmd::update)) {
+                update();
+            }
+            
+        } catch (const std::exception& e) {
+            std::cerr << "Error in listen_socket: " << e.what() << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
     }
@@ -272,16 +281,17 @@ void ipmon::reload()
 
 void ipmon::print()
 {
-    for (auto p = _ifaces.begin(); p != _ifaces.end(); p++) {
-        std::cout << "Interface: " << p->first << " IPv4: ";
-        for (auto& vec : p->second->ipv4)
-            std::cout <<  vec << " ";
+    std::lock_guard<std::mutex> lock(ifaces_mutex_);
+    for (const auto& [name, iface] : _ifaces) {
+        std::cout << "Interface: " << name << " IPv4: ";
+        for (const auto& addr : iface->ipv4)
+            std::cout << addr << " ";
         std::cout << "IPv4_networks: ";
-        for (auto& vec : p->second->ipv4_net)
-            std::cout <<  vec << " ";
+        for (const auto& addr : iface->ipv4_net)
+            std::cout << addr << " ";
         std::cout << "IPv6: ";
-        for (auto& vec : p->second->ipv6)
-            std::cout <<  vec << " ";
+        for (const auto& addr : iface->ipv6)
+            std::cout << addr << " ";
         std::cout << std::endl;
     }
 }
@@ -466,13 +476,14 @@ std::string network_addr_str(in_addr_t addr, in_addr_t mask)
 
 void ipmon::get_if_addresses()
 {
+    std::unordered_map<std::string, std::shared_ptr<struct addrs>> temp_ifaces;
+    
     ifaddrs* raw_ptr = nullptr;
     if (getifaddrs(&raw_ptr) != 0) {
         throw std::runtime_error("getifaddrs failed: " + std::string(strerror(errno)));
     }
     std::unique_ptr<ifaddrs, decltype(&freeifaddrs)> interface_list_ptr(raw_ptr, freeifaddrs);
 
-    std::unordered_map<std::string, std::shared_ptr<struct addrs>> temp_ifaces;
     std::vector<std::string> tmp_ifaces{};
 
     for (auto ifa = interface_list_ptr.get(); ifa != nullptr; ifa = ifa->ifa_next) {
@@ -521,6 +532,7 @@ void ipmon::get_if_addresses()
         }
     }
 
+    // Atomic swap of the maps under lock
     {
         std::lock_guard<std::mutex> lock(ifaces_mutex_);
         _ifaces = std::move(temp_ifaces);
@@ -619,105 +631,118 @@ std::string get_hostname()
 
 void ipmon::tell_proxy()
 {
-    proxy_seq root_seq, then_seq;
+    try {
+        proxy_seq root_seq, then_seq;
 
-    Json::Value if_address_all = Json::arrayValue;
-    Json::Value if_network_all = Json::arrayValue;
+        Json::Value if_address_all = Json::arrayValue;
+        Json::Value if_network_all = Json::arrayValue;
 
-    for (auto p = _ifaces.begin(); p != _ifaces.end(); p++)
-    {
-        if (is_iface_loopback(p->first)) {
-            continue;
+        for (auto p = _ifaces.begin(); p != _ifaces.end(); p++)
+        {
+            if (is_iface_loopback(p->first)) {
+                continue;
+            }
+            Json::Value if_ipv4_address = Json::arrayValue;
+            for (auto &a : p->second->ipv4) {
+                if_ipv4_address.append(a);
+                if_address_all.append(a);
+            }
+            Json::Value if_ipv6_address = Json::arrayValue;
+            for (auto &a : p->second->ipv6) {
+                if_ipv6_address.append(a);
+                if_address_all.append(a);
+            }
+            Json::Value if_ipv4_network = Json::arrayValue;
+            for (auto &a : p->second->ipv4_net) {
+                if_ipv4_network.append(a);
+                if_network_all.append(a);
+            }
+
+            then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv4_address", if_ipv4_address));
+            then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv6_address", if_ipv6_address));
+            then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv4_network", if_ipv4_network));
+
+            Json::Value if_ipv6_network = Json::arrayValue;
+            for (auto &a : p->second->ipv6_net) {
+                if_ipv6_network.append(a);
+            }
+            then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv6_network", if_ipv6_network));
         }
-        Json::Value if_ipv4_address = Json::arrayValue;
-        for (auto &a : p->second->ipv4) {
-            if_ipv4_address.append(a);
-            if_address_all.append(a);
-        }
-        Json::Value if_ipv6_address = Json::arrayValue;
-        for (auto &a : p->second->ipv6) {
-            if_ipv6_address.append(a);
-            if_address_all.append(a);
-        }
-        Json::Value if_ipv4_network = Json::arrayValue;
-        for (auto &a : p->second->ipv4_net) {
-            if_ipv4_network.append(a);
-            if_network_all.append(a);
+        Json::Value hostname = Json::arrayValue;
+        hostname.append(get_hostname());
+        then_seq.cmd_append(proxy_fun_setvar("hostname", hostname));
+        then_seq.cmd_append(proxy_fun_setvar("all_ipv46_address", if_address_all));
+        then_seq.cmd_append(proxy_fun_setvar("all_ipv4_network", if_network_all));
+        root_seq.cmd_append(
+            proxy_ifcond_then(
+                proxy_ifcond(
+                    proxy_ref("phase"),
+                    "eq",
+                    "tcp_session"
+                ),
+                then_seq.get_json()
+            )
+        );
+        auto err = atomic_write(_proxy_outfile, root_seq.get_str());
+        if (err) {
+            throw std::runtime_error(*err);
         }
 
-        then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv4_address", if_ipv4_address));
-        then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv6_address", if_ipv6_address));
-        then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv4_network", if_ipv4_network));
-
-        Json::Value if_ipv6_network = Json::arrayValue;
-        for (auto &a : p->second->ipv6_net) {
-            if_ipv6_network.append(a);
+        if (system(_cmd_reload_proxy) != 0) {
+            throw std::runtime_error("Failed to reload proxy");
         }
-        then_seq.cmd_append(proxy_fun_setvar(p->first + "_ipv6_network", if_ipv6_network));
+
+        if (_opt_monitor) {
+            std::cout << "--Written file " << _proxy_outfile << std::endl;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error in tell_proxy: " << e.what() << std::endl;
+        // Consider whether to rethrow or handle error
     }
-    Json::Value hostname = Json::arrayValue;
-    hostname.append(get_hostname());
-    then_seq.cmd_append(proxy_fun_setvar("hostname", hostname));
-    then_seq.cmd_append(proxy_fun_setvar("all_ipv46_address", if_address_all));
-    then_seq.cmd_append(proxy_fun_setvar("all_ipv4_network", if_network_all));
-    root_seq.cmd_append(
-        proxy_ifcond_then(
-            proxy_ifcond(
-                proxy_ref("phase"),
-                "eq",
-                "tcp_session"
-            ),
-            then_seq.get_json()
-        )
-    );
-    atomic_write(_proxy_outfile, root_seq.get_str());
-
-    if (auto result = system(_cmd_reload_proxy); result != 0) {
-        throw std::runtime_error("Failed to reload proxy: " + std::to_string(result));
-    }
-
-    if (_opt_monitor)
-        std::cout << "--Written file " << _proxy_outfile << std::endl;
 }
 
 void ipmon::ifaces_update_nft()
 {
-    nft_root cmd_json_nft;
-    for (auto p = _ifaces.begin(); p != _ifaces.end(); p++)
-    {
-        std::vector<nft_set> sets;
-        std::string set_4a = p->first + "_ipv4_address";
-        std::string set_4n = p->first + "_ipv4_network";
-        sets.emplace_back("ip", "nat", set_4a, "ipv4_addr", p->second->ipv4);
-        sets.emplace_back("inet", "filter", set_4a, "ipv4_addr", p->second->ipv4);
-        // Error: Could not resolve hostname: Name or service not known [not affecting current version with --flush]
-        //sets.emplace_back("ip", "nat", set_4n, "ipv4_addr", p->second->ipv4_net);
-        //sets.emplace_back("inet", "filter", set_4n, "ipv4_addr", p->second->ipv4_net);
-        for (auto& ns : sets) {
-            cmd_json_nft.cmd_append(ns.cmd_add_set_json());
-            cmd_json_nft.cmd_append(ns.cmd_flush_set_json());
-            cmd_json_nft.cmd_append(ns.cmd_add_element_json());
-            cmd_json_nft.test_cmd_append(ns.cmd_add_empty());
+    try {
+        nft_root cmd_json_nft;
+        for (auto p = _ifaces.begin(); p != _ifaces.end(); p++)
+        {
+            std::vector<nft_set> sets;
+            std::string set_4a = p->first + "_ipv4_address";
+            std::string set_4n = p->first + "_ipv4_network";
+            sets.emplace_back("ip", "nat", set_4a, "ipv4_addr", p->second->ipv4);
+            sets.emplace_back("inet", "filter", set_4a, "ipv4_addr", p->second->ipv4);
+            // Error: Could not resolve hostname: Name or service not known [not affecting current version with --flush]
+            //sets.emplace_back("ip", "nat", set_4n, "ipv4_addr", p->second->ipv4_net);
+            //sets.emplace_back("inet", "filter", set_4n, "ipv4_addr", p->second->ipv4_net);
+            for (auto& ns : sets) {
+                cmd_json_nft.cmd_append(ns.cmd_add_set_json());
+                cmd_json_nft.cmd_append(ns.cmd_flush_set_json());
+                cmd_json_nft.cmd_append(ns.cmd_add_element_json());
+                cmd_json_nft.test_cmd_append(ns.cmd_add_empty());
+            }
         }
+        std::unique_ptr<struct nft_ctx, void (*)(struct nft_ctx*)> nft = { 
+            nft_ctx_new(NFT_CTX_DEFAULT), 
+            nft_ctx_free 
+        };
+        if (!nft) {
+            throw std::runtime_error("Failed to obtain nftables context");
+        }
+        nft_ctx_output_set_flags(&*nft, NFT_CTX_OUTPUT_JSON);
+        nft_ctx_set_dry_run(&*nft, true);
+        bool cmd_ok = true;
+        for (auto& cmd : cmd_json_nft.test_cmds) {
+            if (nft_run_cmd_from_buffer(&*nft, cmd.c_str()) != 0)
+                cmd_ok = false;
+        }
+        nft_ctx_set_dry_run(&*nft, false);
+        if (cmd_ok)
+            if (nft_run_cmd_from_buffer(&*nft, cmd_json_nft.get_pp().c_str()) != 0)
+                log_and_aleep("Error running nft command: " + cmd_json_nft.get_pp() + " : ");
+    } catch (const std::exception& e) {
+        std::cerr << "Error in ifaces_update_nft: " << e.what() << std::endl;
     }
-    std::unique_ptr<struct nft_ctx, void (*)(struct nft_ctx*)> nft = { nft_ctx_new(NFT_CTX_DEFAULT), nft_ctx_free };
-    nft_ctx_output_set_flags(&*nft, NFT_CTX_OUTPUT_JSON);
-    if (!nft) {
-        log_and_aleep("Failed to obtain nftables context.");
-        return;
-    }
-    // need to test that set can be added to table (permissions, table exists etc.)
-    nft_ctx_set_dry_run(&*nft, true);
-    bool cmd_ok = true;
-    for (auto& cmd : cmd_json_nft.test_cmds) {
-        if (nft_run_cmd_from_buffer(&*nft, cmd.c_str()) != 0)
-            cmd_ok = false;
-    }
-    nft_ctx_set_dry_run(&*nft, false);
-    if (cmd_ok)
-        if (nft_run_cmd_from_buffer(&*nft, cmd_json_nft.get_pp().c_str()) != 0)
-            log_and_aleep("Error running nft command: " + cmd_json_nft.get_pp() + " : ");
-    //std::cout << cmd_json_nft.get_pp().c_str() << std::endl;
 }
 
 void ipmon::ifaces_filewrite()
@@ -775,25 +800,41 @@ void ipmon::ifaces_filewrite()
 
 void ipmon::tell_nftables()
 {
-    // Always write up-to-date values into file, no matter if updating running conf or reflushing from file
-    ifaces_filewrite();
-    if (_opt_flush || _opt_start) {
-        std::unique_ptr<struct nft_ctx, void (*)(struct nft_ctx*)> nft = { nft_ctx_new(NFT_CTX_DEFAULT), nft_ctx_free };
-        if (!nft) {
-            log_and_aleep("Failed to obtain nftables context.");
-            return;
+    try {
+        // Always write up-to-date values into file
+        ifaces_filewrite();
+        
+        if (_opt_flush || _opt_start) {
+            std::unique_ptr<struct nft_ctx, void (*)(struct nft_ctx*)> nft = { 
+                nft_ctx_new(NFT_CTX_DEFAULT), 
+                nft_ctx_free 
+            };
+            if (!nft) {
+                throw std::runtime_error("Failed to obtain nftables context");
+            }
+            
+            if (nft_run_cmd_from_filename(&*nft, nft_conf_file()) != 0) {
+                throw std::runtime_error("Failed to run nftables command");
+            }
+        } else {
+            ifaces_update_nft();
         }
-        nft_run_cmd_from_filename(&*nft, nft_conf_file());
-    } else {
-        ifaces_update_nft();
+    } catch (const std::exception& e) {
+        std::cerr << "Error in tell_nftables: " << e.what() << std::endl;
+        // Consider whether to rethrow or handle error
     }
 }
 
-void ipmon::rm_nft_sets ()
+void ipmon::rm_nft_sets()
 {
-    std::unique_ptr<struct nft_ctx, void (*)(struct nft_ctx*)> nft = { nft_ctx_new(NFT_CTX_DEFAULT), nft_ctx_free };
-    if (!nft)
-        return;
+    std::lock_guard<std::mutex> lock(ifaces_mutex_);
+    std::unique_ptr<struct nft_ctx, void (*)(struct nft_ctx*)> nft = { 
+        nft_ctx_new(NFT_CTX_DEFAULT), 
+        nft_ctx_free 
+    };
+    if (!nft) {
+        throw std::runtime_error("Failed to obtain nftables context");
+    }
     for (auto p = _ifaces.begin(); p != _ifaces.end(); p++) {
         nft_run_cmd_from_buffer(&*nft, ("delete set ip nat " + p->first).c_str());
         nft_run_cmd_from_buffer(&*nft, ("delete set inet filter " + p->first).c_str());

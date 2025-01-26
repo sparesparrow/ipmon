@@ -175,7 +175,7 @@ public:
     //! Constructs the object
     cmd_json(std::string keyroot): _keyroot(keyroot) { }
     //! Destructs the object
-    virtual ~cmd_json() {}
+    virtual ~cmd_json() = default;
     /*! \return stored value as a string */
     const std::string get_str()
     {
@@ -215,7 +215,7 @@ public:
         _proot = std::make_shared<Json::Value>(Json::Value(Json::arrayValue));
     }
     //! Destructs the object
-    virtual ~cmd_json_a() {}
+    virtual ~cmd_json_a() override = default;
     //! Adds command to the commands list
     void cmd_append(Json::Value cmd)
     {
@@ -239,7 +239,7 @@ public:
     //! Constructs the object
     nft_root(): cmd_json_a("nftables") { }
     //! Destructs the object
-    virtual ~nft_root() {}
+    virtual ~nft_root() override = default;
     //! Adds testing command to dry run before running actual command
     void test_cmd_append(std::string cmd)
     {
