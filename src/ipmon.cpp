@@ -259,7 +259,7 @@ void ipmon::process_cmdline(int argc, char* argv[])
 
 void ipmon::update()
 {
-    std::lock_guard<std::mutex> lock(ifaces_mutex_);
+    std::lock_guard<std::mutex> lock(update_mutex_);
     get_if_addresses();
     if (_opt_nftables)
         tell_nftables();
@@ -271,7 +271,7 @@ void ipmon::update()
 
 void ipmon::reload()
 {
-    std::lock_guard<std::mutex> lock(ifaces_mutex_);
+    std::lock_guard<std::mutex> lock(update_mutex_);
     get_if_addresses();
     if (_opt_nftables)
         tell_nftables();
