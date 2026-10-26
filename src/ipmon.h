@@ -162,8 +162,11 @@ private:
     FileDescriptor _socket_server_fd;
     FileDescriptor _netlink_fd;
 
-    // Mutex for thread safety
+    // Guards _ifaces: the swap in get_if_addresses() and readers such as print()
     std::mutex ifaces_mutex_;
+    // Serialises update() and reload(), which run from the netlink loop and the socket thread.
+    // Separate from ifaces_mutex_ because both call get_if_addresses() and print(), which take it.
+    std::mutex update_mutex_;
 
     // Using SocketGuard for Unix domain sockets
     SocketGuard _socket_guard;
