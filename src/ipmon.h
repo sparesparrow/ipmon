@@ -111,13 +111,13 @@ private:
     //! Command to reload proxy service
     static constexpr const char* _cmd_reload_proxy = "systemctl reload proxy --quiet";
     //! Nftables persistent configuration file
-    std::string _nft_outfile{"/etc/impon/ifacesAddrs"};
+    std::string _nft_outfile{"/etc/ipmon/ifacesAddrs"};
     //! Nftables persistent configuration file sets
     std::string nft_outfile_sets() const { return _nft_outfile + ".sets"; }
     //! Nftables persistent configuration file variables
     std::string nft_outfile_vars() const { return _nft_outfile + ".vars"; }
     //! Nftables configuration file for ipmon-handled rules
-    static constexpr const char* _nft_conf_ipmon = "/etc/impon/nftables.conf";
+    static constexpr const char* _nft_conf_ipmon = "/etc/ipmon/nftables.conf";
     //! Nftables configuration file for default rules
     static constexpr const char* _nft_conf_default = "/etc/nftables.conf";
     //! Command to check if ipmon-handled rules are included in nftables

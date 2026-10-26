@@ -76,7 +76,7 @@ install(FILES systemd/ipmon.service
 )
 
 # Install configuration directory
-install(DIRECTORY DESTINATION /etc/impon)
+install(DIRECTORY DESTINATION /etc/ipmon)
 install(DIRECTORY DESTINATION /etc/ipmon)
 
 # Set up runtime directory
