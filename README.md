@@ -129,7 +129,7 @@ ipmon -n -p -m --start
 ## Configuration Files
 
 Default configuration directory:
-- `/etc/impon`
+- `/etc/ipmon`
 
 ### NFTables Configuration
 
